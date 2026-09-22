@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gbLogs_0-12.py
+gbLogsPm2_0-13.py
 Traitement et mise en forme des fichiers de logs Gunbot generes par pm2.
 Version "serveur" : le script est place directement dans le repertoire
 pm2/logs et travaille sur les fichiers de logs presents sur disque.
@@ -10,7 +10,7 @@ Version cross-platform : Linux et Windows.
 Historique des versions : cf. CHANGELOG.md.
 
 Usage :
-  placer ce script dans le repertoire pm2/logs, puis : python3 gbLogs_0-12.py
+  placer ce script dans le repertoire pm2/logs, puis : python3 gbLogsPm2_0-13.py
 
 Format des balises GBLOG:BEGIN/END (emises par gunmaster trading_engine.js
 ou toute strategie custom, cf. "formatage_logs_gunbot.md") : cle=valeur
@@ -83,11 +83,13 @@ sur tous les fichiers pm2 de l'instance), pas ventilees par paire : si
 plusieurs paires sont conservees pour une meme instance, le meme jeu de
 compteurs est reporte dans le stats.json de chacune.
 
-Le reste (recherche des fichiers -out par instance, mode journalier /
-plage precise, filtrage optionnel au 1er cycle par bougie, separateurs
-simple/double, suppression des codes ANSI, ignorance des fichiers
--error, selection interactive de paire(s) si plusieurs sont detectees)
-est decrit plus bas dans les fonctions correspondantes.
+Le reste (recherche des fichiers -out par instance, selection interactive
+des instances a traiter (toutes par defaut), choix explicite entre mode
+journalier et mode plage precise (date+heure quelconques, y compris la
+journee en cours), filtrage optionnel au 1er cycle par bougie,
+separateurs simple/double, suppression des codes ANSI, ignorance des
+fichiers -error, selection interactive de paire(s) si plusieurs sont
+detectees) est decrit plus bas dans les fonctions correspondantes.
 
 Sortie :
   - Une archive .zip deposee dans le meme repertoire (pm2/logs), contenant
@@ -224,21 +226,81 @@ def parse_datetime_input(raw: str, is_end: bool):
     return "INVALID"
 
 
-def ask_date_range() -> tuple[datetime, datetime]:
+def ask_processing_mode() -> bool:
     """
-    Demande a l'utilisateur les bornes de date/heure a traiter.
-    Par defaut : hier 00:00:00 -> hier 23:59:59.
+    Demande explicitement a l'utilisateur le mode de selection de periode
+    (aucune deduction automatique a partir des heures saisies).
+    Retourne True pour le mode journalier (journees completes, base sur
+    les fichiers 00:00:00 de pm2), False pour le mode plage precise
+    (bornes date+heure quelconques, y compris la journee en cours).
+    """
+    print("\nMode de selection de la periode :")
+    print("  1 - Mode journalier (journees completes)")
+    print("  2 - Plage precise (date + heure quelconques, y compris aujourd'hui)")
+    while True:
+        raw = input("Votre choix [1/2] : ").strip()
+        if raw == "1":
+            return True
+        if raw == "2":
+            return False
+        print("  X Entrez 1 ou 2.")
+
+
+def ask_daily_range() -> tuple[datetime, datetime]:
+    """
+    Mode journalier : demande les dates de debut/fin (sans heure).
+    Par defaut : hier -> hier. Retourne (debut 00:00:00, fin 23:59:59).
     """
     yesterday = (datetime.now() - timedelta(days=1)).date()
-    default_start = datetime.combine(yesterday, datetime.min.time())
-    default_end = datetime.combine(yesterday, datetime.max.time()).replace(microsecond=0)
+    default_str = yesterday.strftime("%Y-%m-%d")
 
-    print("\nPeriode a traiter (format 'YYYY-MM-DD HH:MM:SS' ou 'DD/MM/YYYY HH:MM:SS') :")
-    print(f"  Par defaut, debut = {default_start.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\nJournee(s) a traiter (format 'YYYY-MM-DD' ou 'DD/MM/YYYY') :")
     while True:
-        raw = input(f"Date/heure de debut [{default_start.strftime('%Y-%m-%d %H:%M:%S')}] : ")
+        raw = input(f"Date de debut [{default_str}] : ")
         if not raw.strip():
-            start_dt = default_start
+            start_date = yesterday
+            break
+        parsed = parse_datetime_input(raw, is_end=False)
+        if parsed == "INVALID" or parsed is None:
+            print("  X Format invalide.")
+            continue
+        start_date = parsed.date()
+        break
+
+    while True:
+        raw = input(f"Date de fin [{default_str}] : ")
+        if not raw.strip():
+            end_date = yesterday
+        else:
+            parsed = parse_datetime_input(raw, is_end=True)
+            if parsed == "INVALID" or parsed is None:
+                print("  X Format invalide.")
+                continue
+            end_date = parsed.date()
+        if end_date < start_date:
+            print("  X La date de fin doit etre posterieure a la date de debut.")
+            continue
+        break
+
+    start_dt = datetime.combine(start_date, dtime(0, 0, 0))
+    end_dt = datetime.combine(end_date, dtime(23, 59, 59))
+    return start_dt, end_dt
+
+
+def ask_precise_range() -> tuple[datetime, datetime]:
+    """
+    Mode plage precise : demande des bornes date+heure quelconques,
+    y compris sur la journee en cours (la fin peut etre l'instant present).
+    Par defaut : aujourd'hui 00:00:00 -> maintenant.
+    """
+    today_start = datetime.combine(datetime.now().date(), dtime(0, 0, 0))
+    now = datetime.now().replace(microsecond=0)
+
+    print("\nPeriode precise a traiter (format 'YYYY-MM-DD HH:MM:SS' ou 'DD/MM/YYYY HH:MM:SS') :")
+    while True:
+        raw = input(f"Date/heure de debut [{today_start.strftime('%Y-%m-%d %H:%M:%S')}] : ")
+        if not raw.strip():
+            start_dt = today_start
             break
         parsed = parse_datetime_input(raw, is_end=False)
         if parsed == "INVALID" or parsed is None:
@@ -247,11 +309,10 @@ def ask_date_range() -> tuple[datetime, datetime]:
         start_dt = parsed
         break
 
-    print(f"  Par defaut, fin = {default_end.strftime('%Y-%m-%d %H:%M:%S')}")
     while True:
-        raw = input(f"Date/heure de fin [{default_end.strftime('%Y-%m-%d %H:%M:%S')}] : ")
+        raw = input(f"Date/heure de fin [{now.strftime('%Y-%m-%d %H:%M:%S')}] : ")
         if not raw.strip():
-            end_dt = default_end
+            end_dt = now
             break
         parsed = parse_datetime_input(raw, is_end=True)
         if parsed == "INVALID" or parsed is None:
@@ -327,6 +388,31 @@ def ask_pair_selection(pair_counts: "Counter[str]") -> set[str]:
         print("    X Selection invalide.")
 
 
+def ask_instance_selection(instances: list[str]) -> set[str]:
+    """
+    Demande a l'utilisateur quelle(s) instance(s) gunbot traiter parmi
+    celles detectees sur le disque. Saisie vide ou index "toutes" ->
+    toutes les instances (comportement par defaut).
+    """
+    print("\nInstance(s) a traiter :")
+    for idx, name in enumerate(instances, start=1):
+        print(f"  {idx} - {name}")
+    all_idx = len(instances) + 1
+    print(f"  {all_idx} - Toutes les instances (par defaut)")
+    print("  (plusieurs numeros separes par des virgules acceptes, ex : 1,3)")
+    while True:
+        raw = input(f"Votre choix [{all_idx}] : ").strip()
+        if not raw or raw == str(all_idx):
+            return set(instances)
+        try:
+            idxs = [int(x.strip()) for x in raw.split(",")]
+            if idxs and all(1 <= x <= len(instances) for x in idxs):
+                return {instances[x - 1] for x in idxs}
+        except ValueError:
+            pass
+        print("  X Selection invalide.")
+
+
 def parse_cycle_timestamp(ts_str: str) -> datetime:
     """Convertit '2026/04/26 19:15:46' en objet datetime (naif, UTC implicite)."""
     return datetime.strptime(ts_str.strip(), "%Y/%m/%d %H:%M:%S")
@@ -396,15 +482,6 @@ def select_files_in_range(
 
     selected.sort(key=lambda t: t[0])
     return selected
-
-
-def is_whole_day_range(start: datetime, end: datetime) -> bool:
-    """
-    Determine si la plage saisie correspond a des journees completes
-    (heure de debut = 00:00:00 et heure de fin = 23:59:59), ce qui
-    declenche le mode journalier base sur les fichiers 00:00:00 de pm2.
-    """
-    return start.time() == dtime(0, 0, 0) and end.time() == dtime(23, 59, 59)
 
 
 def select_files_daily(
@@ -807,7 +884,7 @@ def build_stats_header(
     """
     lines = [
         SEP_SINGLE,
-        "# gbLogs stats (gbLogsPm2_0-12)",
+        "# gbLogs stats (gbLogsPm2_0-13)",
         f"# instance={instance} pair={pair_suffix or '(toutes, fichier non separe par paire)'}",
         f"# periode={start_dt.strftime('%Y-%m-%d %H:%M:%S')} -> {end_dt.strftime('%Y-%m-%d %H:%M:%S')}",
         f"# cycles={n_cycles}",
@@ -918,28 +995,34 @@ def main() -> None:
         print("\nX Aucun fichier '<instance>-out__...log' trouve dans le repertoire.")
         sys.exit(1)
 
-    instances = sorted(groups.keys())
-    print(f"\nInstance(s) detectee(s) : {', '.join(instances)}")
-    for instance in instances:
+    all_instances = sorted(groups.keys())
+    print(f"\nInstance(s) detectee(s) : {', '.join(all_instances)}")
+    for instance in all_instances:
         print(f"  - {instance} : {len(groups[instance])} fichier(s) au total")
 
-    # 2. Periode a traiter
-    start_dt, end_dt = ask_date_range()
+    # 2. Selection des instances a traiter (toutes par defaut)
+    selected_instances = ask_instance_selection(all_instances)
+    instances = [i for i in all_instances if i in selected_instances]
+
+    # 3. Mode de selection de periode (choix explicite) puis bornes
+    daily_mode = ask_processing_mode()
+    if daily_mode:
+        start_dt, end_dt = ask_daily_range()
+    else:
+        start_dt, end_dt = ask_precise_range()
     print(f"\nPeriode retenue : {start_dt.strftime('%Y-%m-%d %H:%M:%S')} "
           f"-> {end_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    daily_mode = is_whole_day_range(start_dt, end_dt)
     if daily_mode:
         print("  Mode journalier (fichiers 00:00:00 de pm2) - "
               "repli automatique par instance si besoin.")
     else:
         print("  Mode plage precise (heures personnalisees saisies).")
 
-    # 3. Questions utilisateur (appliquees a toutes les instances)
+    # 4. Questions utilisateur (appliquees a toutes les instances)
     tf_minutes = ask_timeframe()
     filter_mode = ask_filter_mode()
 
-    # 4. Traitement par instance
+    # 5. Traitement par instance
     # L'archive zip est ouverte et alimentee au fil du traitement (chaque
     # fichier de sortie y est ecrit des qu'il est pret, puis sa chaine de
     # caracteres en memoire est liberee) plutot que d'accumuler tous les
@@ -992,7 +1075,7 @@ def main() -> None:
                 print("    X Aucun cycle trouve pour cette instance, ignoree.")
                 continue
 
-            # 4bis. Selection de paire(s) si plusieurs paires distinctes
+            # 5bis. Selection de paire(s) si plusieurs paires distinctes
             pair_counts = Counter(c["pair"] for c in all_cycles)
             if len(pair_counts) > 1:
                 print(f"    {len(pair_counts)} paire(s) distincte(s) detectee(s) : "

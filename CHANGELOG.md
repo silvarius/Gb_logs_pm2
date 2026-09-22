@@ -5,11 +5,32 @@ Gunbot. Toutes les versions sont cross-platform (Linux et Windows).
 
 Deux lignées se sont succédé :
 - **gbLogs** (0-2, 0-3) : script à placer à côté des fichiers de logs bruts.
-- **gbLogsPm2** (0-3 à 0-12) : script dédié aux logs générés par pm2,
+- **gbLogsPm2** (0-3 à 0-13) : script dédié aux logs générés par pm2,
   placé directement dans `pm2/logs`. La numérotation repart à 0-3 au
   changement de lignée.
 
 ## gbLogsPm2
+
+### [0-13] — sélection explicite du mode de période + choix des instances
+
+Deux évolutions fonctionnelles demandées par l'utilisateur :
+
+1. Le mode journalier (journées complètes, fichiers 00:00:00 pm2) et le
+   mode plage précise (bornes date+heure quelconques, y compris la
+   journée en cours jusqu'à l'instant présent) n'étaient auparavant pas
+   choisis explicitement : le mode journalier était déduit après coup en
+   comparant les heures saisies à 00:00:00/23:59:59
+   (`is_whole_day_range`). Une saisie ambiguë ou un besoin de traiter la
+   journée en cours en temps réel n'était donc pas correctement couvert.
+   **Correctif** : nouvelle question explicite (`ask_processing_mode`)
+   posée avant la saisie des bornes ; deux fonctions de saisie dédiées
+   (`ask_daily_range` pour des dates seules, `ask_precise_range` pour des
+   date+heure avec défaut fin = maintenant). `is_whole_day_range` et
+   l'ancienne `ask_date_range` sont supprimées.
+2. Ajout de la sélection interactive des instances gunbot à traiter
+   (`ask_instance_selection`), sur le même principe que la sélection de
+   paire déjà existante. Toutes les instances détectées sont traitées
+   par défaut (saisie vide).
 
 ### [0-12] — suite à un "Killed" par l'OOM killer Linux constaté en
 production (run du 2026-09-22 sur gbt1/gbt2/gbt3)
