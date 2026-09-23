@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gbLogsPm2_0-13.py
+gbLogsPm2_0-14.py
 Traitement et mise en forme des fichiers de logs Gunbot generes par pm2.
 Version "serveur" : le script est place directement dans le repertoire
 pm2/logs et travaille sur les fichiers de logs presents sur disque.
@@ -10,7 +10,7 @@ Version cross-platform : Linux et Windows.
 Historique des versions : cf. CHANGELOG.md.
 
 Usage :
-  placer ce script dans le repertoire pm2/logs, puis : python3 gbLogsPm2_0-13.py
+  placer ce script dans le repertoire pm2/logs, puis : python3 gbLogsPm2_0-14.py
 
 Format des balises GBLOG:BEGIN/END (emises par gunmaster trading_engine.js
 ou toute strategie custom, cf. "formatage_logs_gunbot.md") : cle=valeur
@@ -595,10 +595,26 @@ def resolve_content_pair(
 
 
 def parse_cycles(
-    text: str, short_pair_map: dict[str, str] | None = None, source_label: str = ""
+    text: str, short_pair_map: dict[str, str] | None = None, source_label: str = "",
+    keep_body: bool = True, pair_filter: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, int], dict[str, str]]:
     """
     Decoupe le texte brut (deja nettoye des codes ANSI) en liste de cycles.
+
+    keep_body : si False, le corps (lignes de contenu) n'est jamais stocke
+    en memoire pour aucun cycle - utilise pour une passe "metadonnees
+    seules" (timestamp/pair/raw_key/stats), peu couteuse en RAM, qui sert
+    a determiner les paires presentes avant de demander a l'utilisateur
+    lesquelles conserver (cf. collect_instance_cycles et main()).
+
+    pair_filter : si fourni, seuls les cycles dont la paire (corrigee le
+    cas echeant par le BEGIN, cf. plus bas) appartient a cet ensemble sont
+    conserves dans la liste `cycles` retournee, et seul leur corps est
+    stocke (si keep_body) ; les cycles des autres paires sont entierement
+    ignores (jamais accumules en memoire). Utilise pour la passe reelle
+    de rendu, executee une fois par paire retenue, afin que le pic memoire
+    reste borne a une seule paire a la fois plutot qu'a la totalite de
+    l'instance.
 
     Mode hybride, round par round :
       - si le tableau est immediatement suivi d'un [GBLOG:BEGIN ...],
@@ -643,6 +659,12 @@ def parse_cycles(
     if short_pair_map is None:
         short_pair_map = {}
 
+    def _keep_pair(pair: str | None) -> bool:
+        return pair_filter is None or pair in pair_filter
+
+    def _should_store_body(pair: str | None) -> bool:
+        return keep_body and _keep_pair(pair)
+
     in_table = False
     pending_meta: dict | None = None       # meta du tableau qui vient d'etre lu
     legacy_meta: dict | None = None        # round herite en cours (sans balises)
@@ -658,8 +680,9 @@ def parse_cycles(
             # Un round herite en cours (sans balises) se termine forcement
             # au prochain tableau : on le cloture ici.
             if legacy_meta is not None:
-                cycles.append({**legacy_meta, "body": legacy_body, "duration_ms": None})
-                stats["legacy_mode"] += 1
+                if _keep_pair(legacy_meta["pair"]):
+                    cycles.append({**legacy_meta, "body": legacy_body, "duration_ms": None})
+                    stats["legacy_mode"] += 1
                 legacy_meta = None
                 legacy_body = []
             elif pending_meta is not None:
@@ -742,7 +765,7 @@ def parse_cycles(
                 continue
             oc = open_tag_cycles.pop(match_idx)
             duration_ms = (t_ms - oc["t_begin"]) if (t_ms is not None and oc["t_begin"] is not None) else None
-            if oc["meta"].get("timestamp") is not None:
+            if oc["meta"].get("timestamp") is not None and _keep_pair(oc["pair"]):
                 cycles.append({**oc["meta"], "body": oc["body"], "duration_ms": duration_ms})
                 stats["tag_mode"] += 1
             i += 1
@@ -782,21 +805,27 @@ def parse_cycles(
             if open_tag_cycles:
                 # Attribuee au cycle balise le plus recemment ouvert
                 # (celui dont l'execution est la plus probable en cours).
-                open_tag_cycles[-1]["body"].append(content_line)
+                # Le corps n'est reellement stocke que si ce cycle fait
+                # partie des paires retenues (cf. _should_store_body) :
+                # evite d'accumuler en memoire le contenu des paires qui
+                # seront de toute facon ecartees.
+                if _should_store_body(open_tag_cycles[-1]["pair"]):
+                    open_tag_cycles[-1]["body"].append(content_line)
             elif pending_meta is not None:
                 # Premiere ligne de contenu apres un tableau non suivi
                 # d'un BEGIN -> repli mode herite pour ce round.
                 legacy_meta = pending_meta
                 pending_meta = None
-                legacy_body = [content_line]
+                legacy_body = [content_line] if _should_store_body(legacy_meta["pair"]) else []
             elif legacy_meta is not None:
-                legacy_body.append(content_line)
+                if _should_store_body(legacy_meta["pair"]):
+                    legacy_body.append(content_line)
             # sinon : ligne orpheline (avant le premier tableau, ou entre
             # un END et le tableau suivant) -> ignoree, cf. docstring.
         i += 1
 
     # Fin de fichier : round herite encore ouvert -> on le cloture.
-    if legacy_meta is not None:
+    if legacy_meta is not None and _keep_pair(legacy_meta["pair"]):
         cycles.append({**legacy_meta, "body": legacy_body, "duration_ms": None})
         stats["legacy_mode"] += 1
 
@@ -806,7 +835,9 @@ def parse_cycles(
     return cycles, stats, short_pair_map
 
 
-def collect_instance_cycles(filepaths: list[str]) -> tuple[list[dict], dict[str, int]]:
+def collect_instance_cycles(
+    filepaths: list[str], keep_body: bool = True, pair_filter: set[str] | None = None,
+) -> tuple[list[dict], dict[str, int]]:
     """
     Lit tous les fichiers -out selectionnes pour une instance, les nettoie,
     les decoupe en cycles, fusionne le tout et trie chronologiquement.
@@ -817,6 +848,11 @@ def collect_instance_cycles(filepaths: list[str]) -> tuple[list[dict], dict[str,
     La table court->complet (short_pair_map) est partagee et enrichie au
     fil des fichiers traites pour une meme instance, pour beneficier d'une
     correspondance deja etablie sur un fichier precedent (rotation pm2).
+
+    keep_body / pair_filter : passes tels quels a parse_cycles (cf. sa
+    docstring) - permettent d'appeler cette fonction soit en passe legere
+    "metadonnees seules" (toutes paires, sans corps), soit en passe reelle
+    filtree sur une seule paire (avec corps).
     """
     all_cycles: list[dict] = []
     total_stats = {
@@ -830,7 +866,8 @@ def collect_instance_cycles(filepaths: list[str]) -> tuple[list[dict], dict[str,
         text = read_file_text(filepath)
         text = strip_ansi(text)
         cycles, stats, short_pair_map = parse_cycles(
-            text, short_pair_map=short_pair_map, source_label=os.path.basename(filepath)
+            text, short_pair_map=short_pair_map, source_label=os.path.basename(filepath),
+            keep_body=keep_body, pair_filter=pair_filter,
         )
         all_cycles.extend(cycles)
         for k in total_stats:
@@ -884,7 +921,7 @@ def build_stats_header(
     """
     lines = [
         SEP_SINGLE,
-        "# gbLogs stats (gbLogsPm2_0-13)",
+        "# gbLogs stats (gbLogsPm2_0-14)",
         f"# instance={instance} pair={pair_suffix or '(toutes, fichier non separe par paire)'}",
         f"# periode={start_dt.strftime('%Y-%m-%d %H:%M:%S')} -> {end_dt.strftime('%Y-%m-%d %H:%M:%S')}",
         f"# cycles={n_cycles}",
@@ -1027,9 +1064,25 @@ def main() -> None:
     # fichier de sortie y est ecrit des qu'il est pret, puis sa chaine de
     # caracteres en memoire est liberee) plutot que d'accumuler tous les
     # contenus generes (toutes instances/paires confondues) dans une liste
-    # jusqu'a la fin : sur un serveur avec beaucoup de cycles/paires, cette
-    # accumulation peut epuiser la RAM disponible (processus tue par l'OOM
-    # killer).
+    # jusqu'a la fin.
+    #
+    # Pour chaque instance, le traitement se fait en deux passes distinctes
+    # sur les fichiers source (cf. CHANGELOG [0-14]) :
+    #   - passe "metadonnees seules" (keep_body=False) : decoupe tous les
+    #     cycles de l'instance, toutes paires confondues, mais ne stocke
+    #     jamais leur corps (uniquement timestamp/pair/duree/stats). Peu
+    #     couteuse en RAM meme sur un tres gros volume de cycles. Sert a
+    #     compter les paires presentes et poser la question de selection
+    #     AVANT toute accumulation lourde.
+    #   - passe reelle, executee une fois par paire retenue (pair_filter=
+    #     {pair}) : reparse les memes fichiers, mais ne construit/garde en
+    #     memoire que les cycles (avec corps) de cette seule paire, ecrits
+    #     dans l'archive des qu'ils sont prets puis liberes avant de passer
+    #     a la paire suivante.
+    # Le pic memoire est ainsi borne a la plus grosse paire retenue pour
+    # une instance donnee, plutot qu'a la somme de toutes ses paires - cas
+    # qui a provoque un "Killed" (OOM) en production le 2026-09-22 avec le
+    # choix "Toutes les paires" sur une instance a fort volume.
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_zip_path = os.path.join(script_dir, f"gunbot_logs_processed_{run_ts}.zip")
     written_filenames: list[str] = []
@@ -1058,8 +1111,14 @@ def main() -> None:
             for ts, fpath in selected:
                 print(f"    - {os.path.basename(fpath)}")
 
-            all_cycles, stats = collect_instance_cycles([f for _, f in selected])
-            print(f"    {len(all_cycles)} cycle(s) detecte(s) "
+            source_filepaths = [f for _, f in selected]
+
+            # Passe 1 : metadonnees seules (sans corps), toutes paires
+            # confondues - determine les paires presentes et les stats
+            # d'anomalies de l'instance, sans jamais garder de texte de
+            # cycle en memoire.
+            meta_cycles, stats = collect_instance_cycles(source_filepaths, keep_body=False)
+            print(f"    {len(meta_cycles)} cycle(s) detecte(s) "
                   f"({stats['tag_mode']} en mode balise, {stats['legacy_mode']} en mode herite).")
             if any(stats[k] for k in (
                 "pair_mismatch", "content_pair_mismatch", "pending_meta_overwritten",
@@ -1071,40 +1130,41 @@ def main() -> None:
                       f"{stats['orphan_end']} END orphelin(s), "
                       f"{stats['unclosed_begin']} BEGIN jamais referme(s) (rejetes).")
 
-            if not all_cycles:
+            if not meta_cycles:
                 print("    X Aucun cycle trouve pour cette instance, ignoree.")
                 continue
 
-            # 5bis. Selection de paire(s) si plusieurs paires distinctes
-            pair_counts = Counter(c["pair"] for c in all_cycles)
+            # 5bis. Selection de paire(s) si plusieurs paires distinctes -
+            # posee ici, avant toute passe avec corps.
+            pair_counts = Counter(c["pair"] for c in meta_cycles)
             if len(pair_counts) > 1:
                 print(f"    {len(pair_counts)} paire(s) distincte(s) detectee(s) : "
                       f"{', '.join(f'{p} ({n})' for p, n in sorted(pair_counts.items()))}")
                 selected_pairs = ask_pair_selection(pair_counts)
             else:
                 selected_pairs = set(pair_counts.keys())
+            del meta_cycles
 
-            kept_cycles = [c for c in all_cycles if c["pair"] in selected_pairs]
-            if not kept_cycles:
-                print("    X Aucun cycle conserve apres selection de paire, instance ignoree.")
-                continue
+            # pair_suffix n'est ajoute au nom de fichier que si plusieurs
+            # paires sont effectivement conservees pour cette instance
+            # (comportement inchange par rapport aux versions precedentes).
+            pairs_to_process = sorted(selected_pairs)
+            add_pair_suffix = len(pairs_to_process) > 1
 
-            distinct_pairs_kept = sorted(set(c["pair"] for c in kept_cycles))
-            if len(distinct_pairs_kept) == 1:
-                groups_by_pair = {None: kept_cycles}
-            else:
-                groups_by_pair = {}
-                for c in kept_cycles:
-                    groups_by_pair.setdefault(c["pair"], []).append(c)
-
-            # Liberation explicite : all_cycles/kept_cycles ne sont plus
-            # necessaires une fois groups_by_pair construit (evite de les
-            # garder en memoire pendant le rendu, potentiellement volumineux,
-            # des paires de cette instance).
-            del all_cycles, kept_cycles
-
-            for pair_suffix, group_cycles in groups_by_pair.items():
+            for pair in pairs_to_process:
+                # Passe 2 (par paire retenue) : reparse les memes fichiers,
+                # filtree sur cette seule paire (pair_filter) - seul son
+                # corps est construit/garde en memoire, ecrit dans
+                # l'archive puis libere avant de passer a la paire
+                # suivante.
+                group_cycles, _pair_stats = collect_instance_cycles(
+                    source_filepaths, pair_filter={pair}
+                )
+                if not group_cycles:
+                    continue
                 group_cycles.sort(key=lambda c: c["timestamp"])
+
+                pair_suffix = pair if add_pair_suffix else None
 
                 if filter_mode:
                     cycles_to_render = filter_cycles_by_candle(group_cycles, tf_minutes)
@@ -1132,7 +1192,7 @@ def main() -> None:
                 out_zf.writestr(stats_json_filename, stats_json_content)
                 written_filenames.append(stats_json_filename)
 
-            del groups_by_pair
+                del group_cycles, cycles_to_render
 
     if not written_filenames:
         os.remove(output_zip_path)

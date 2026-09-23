@@ -5,11 +5,46 @@ Gunbot. Toutes les versions sont cross-platform (Linux et Windows).
 
 Deux lignées se sont succédé :
 - **gbLogs** (0-2, 0-3) : script à placer à côté des fichiers de logs bruts.
-- **gbLogsPm2** (0-3 à 0-13) : script dédié aux logs générés par pm2,
+- **gbLogsPm2** (0-3 à 0-14) : script dédié aux logs générés par pm2,
   placé directement dans `pm2/logs`. La numérotation repart à 0-3 au
   changement de lignée.
 
 ## gbLogsPm2
+
+### [0-14] — nouveau "Killed" (OOM) en production malgré la 0-12 ; passe
+metadonnees + rendu par paire filtrée
+
+Un run du 2026-09-22 sur gbt1/gbt2 a de nouveau été tué par l'OOM killer,
+juste après le choix "Toutes les paires" sur gbt2 (~49000 cycles, 4
+paires). Le correctif de la 0-12 (écriture streaming de l'archive)
+n'agissait qu'en sortie : `collect_instance_cycles` continuait
+d'accumuler en RAM, pour une même instance, le corps (liste des lignes)
+de **tous les cycles de toutes les paires** avant même de savoir
+lesquelles seraient conservées — l'essentiel du pic mémoire venait de là,
+pas de l'écriture de l'archive.
+
+**Correctif** : traitement de chaque instance en deux passes sur les
+fichiers source.
+1. Passe "métadonnées seules" (`parse_cycles`/`collect_instance_cycles`,
+   nouveau paramètre `keep_body=False`) : découpe tous les cycles de
+   l'instance, toutes paires confondues, sans jamais stocker leur corps
+   (seuls timestamp/pair/durée/stats sont gardés). Sert à compter les
+   paires présentes et poser la question de sélection de paire(s) *avant*
+   toute accumulation lourde (reprend la suggestion de l'utilisateur de
+   poser la question en amont).
+2. Passe réelle, exécutée une fois par paire retenue (nouveau paramètre
+   `pair_filter={pair}`) : reparse les mêmes fichiers, mais ne
+   construit/garde en mémoire que les cycles (avec corps) de cette seule
+   paire, aussitôt écrits dans l'archive zip puis libérés avant de passer
+   à la paire suivante.
+
+Le pic mémoire est ainsi borné à la plus grosse paire retenue pour une
+instance donnée, plutôt qu'à la somme de toutes ses paires. Contrepartie
+assumée : les fichiers sources sont relus/reparsés une fois par paire
+retenue (E/S et CPU disque en plus, négligeables par rapport au risque
+d'OOM). Comportement fonctionnel et contenu de l'archive de sortie
+inchangés (même suffixe de nom de fichier par paire, mêmes stats
+d'instance reportées dans chaque `.stats.json`).
 
 ### [0-13] — sélection explicite du mode de période + choix des instances
 
