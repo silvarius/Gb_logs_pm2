@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gbLogsPm2_0-14.py
+gblogspm2_ihm.py (version interne 0-14)
 Traitement et mise en forme des fichiers de logs Gunbot generes par pm2.
 Version "serveur" : le script est place directement dans le repertoire
 pm2/logs et travaille sur les fichiers de logs presents sur disque.
 Version cross-platform : Linux et Windows.
+Version "IHM" : questions posees interactivement a l'utilisateur (cf.
+gblogspm2_arg.py pour l'equivalent pilote par arguments, destine a
+l'automatisation/cron).
 
-Historique des versions : cf. CHANGELOG.md.
+Historique des versions : cf. gblogspm2_ihm.changelog.md.
 
 Usage :
-  placer ce script dans le repertoire pm2/logs, puis : python3 gbLogsPm2_0-14.py
+  placer ce script dans le repertoire pm2/logs, puis : python3 gblogspm2_ihm.py
 
 Format des balises GBLOG:BEGIN/END (emises par gunmaster trading_engine.js
 ou toute strategie custom, cf. "formatage_logs_gunbot.md") : cle=valeur

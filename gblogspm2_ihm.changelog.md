@@ -1,15 +1,30 @@
-# Changelog — gbLogs / gbLogsPm2
+# Changelog — gblogspm2_ihm.py (ex gbLogs / gbLogsPm2)
 
 Historique des versions du script de traitement et mise en forme des logs
-Gunbot. Toutes les versions sont cross-platform (Linux et Windows).
+Gunbot, questions posées interactivement à l'utilisateur (IHM). Toutes les
+versions sont cross-platform (Linux et Windows).
 
-Deux lignées se sont succédé :
+Deux lignées se sont succédé avant le renommage en `gblogspm2_ihm.py` (la
+version, 0-14, reste indiquée dans le code, cf. en-tête du script) :
 - **gbLogs** (0-2, 0-3) : script à placer à côté des fichiers de logs bruts.
 - **gbLogsPm2** (0-3 à 0-14) : script dédié aux logs générés par pm2,
   placé directement dans `pm2/logs`. La numérotation repart à 0-3 au
   changement de lignée.
 
+Pour la version pilotée par arguments (automatisation/cron), voir
+`gblogspm2_arg.py` et son changelog dédié `gblogspm2_arg.changelog.md`,
+dérivée de la 0-14 ci-dessous.
+
 ## gbLogsPm2
+
+### [0-15 → gblogspm2_ihm.py] — renommage de fichier uniquement
+
+Le fichier est renommé `gbLogsPm2_0-14.py` → `gblogspm2_ihm.py` (nom en
+minuscule, cf. `AGENTS.md`, et suffixe `_ihm` pour le distinguer de
+`gblogspm2_arg.py`, nouvelle version pilotée par arguments destinée à
+l'automatisation quotidienne sur le serveur). La version applicative
+reste 0-14 (indiquée dans le code, plus dans le nom de fichier) :
+aucun changement fonctionnel.
 
 ### [0-14] — nouveau "Killed" (OOM) en production malgré la 0-12 ; passe
 metadonnees + rendu par paire filtrée
