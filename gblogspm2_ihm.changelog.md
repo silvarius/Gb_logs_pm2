@@ -17,6 +17,30 @@ dérivée de la 0-14 ci-dessous.
 
 ## gbLogsPm2
 
+### [0-16] — (après renommage) prise en compte du fichier de log courant ; sélection par bornes réelles
+
+Constat (scan de test du 2026-09-28) : `scan` signalait 95 min (gbt1) et
+75 min (gbt2) sans cycle alors que les cycles existaient. Cause :
+`scan_out_files` n'acceptait que les archives logrotate
+`<instance>-out__<date>.log[.gz]` ; le fichier courant `<instance>-out.log`
+(cycles écrits depuis la dernière rotation) était ignoré.
+
+Correctif :
+- `scan_out_files` accepte aussi `<instance>-out.log` (trié en dernier).
+- Nouvelle `file_time_bounds` : premier/dernier horodatage de cycle (UTC)
+  lus dans le contenu du fichier (début et fin seulement pour les fichiers
+  non compressés). Ni le nom (= heure de rotation, indicatif) ni la date
+  de modification (heure locale, modifiable) ne font foi.
+- Nouvelle `select_files_by_bounds` : retient les fichiers dont la période
+  réelle chevauche [start, end]. Remplace `select_files_daily` et
+  `select_files_in_range` (le mode daily n'exige plus les archives
+  00:00:00 et fonctionne aussi pour la journée en cours).
+- Les cycles présents à la fois dans une archive et le fichier courant
+  restent dédupliqués par `raw_key`.
+
+Coût : chaque fichier est ouvert pour lire ses bornes (les `.gz` sont
+décompressés entièrement).
+
 ### [0-15 → gblogspm2_ihm.py] — renommage de fichier uniquement
 
 Le fichier est renommé `gbLogsPm2_0-14.py` → `gblogspm2_ihm.py` (nom en

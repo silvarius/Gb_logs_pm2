@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gblogspm2_ihm.py (version interne 0-14)
+gblogspm2_ihm.py (version interne 0-16)
 Traitement et mise en forme des fichiers de logs Gunbot generes par pm2.
 Version "serveur" : le script est place directement dans le repertoire
 pm2/logs et travaille sur les fichiers de logs presents sur disque.
@@ -184,6 +184,17 @@ PM2_FILENAME_RE = re.compile(
     r'^(?P<instance>.+)-(?P<stream>out|error)__'
     r'(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.log(\.gz)?$'
 )
+
+# Fichier de log COURANT de pm2 (pas encore archive par logrotate) :
+#   <instance>-out.log   (sans horodatage dans le nom)
+# Il contient les cycles ecrits depuis la derniere rotation jusqu'a
+# maintenant ; il est lu en plus des archives (cf. scan_out_files).
+PM2_CURRENT_FILENAME_RE = re.compile(r'^(?P<instance>.+)-out\.log$')
+
+# Horodatage de cycle dans la ligne de donnees du tableau ASCII (UTC), utilise
+# pour lire les bornes reelles d'un fichier (cf. file_time_bounds).
+TABLE_TS_RE = re.compile(r'│\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s*│')
+BOUNDS_CHUNK_BYTES = 4 * 1024 * 1024
 
 TIMEFRAMES_HINT = ["1", "3", "5", "10", "15", "30", "60", "120", "240", "360", "720", "1440"]
 
@@ -435,10 +446,14 @@ def candle_open_time(dt: datetime, tf_minutes: int) -> datetime:
 
 def scan_out_files(directory: str) -> dict[str, list[tuple[datetime, str]]]:
     """
-    Parcourt le repertoire et regroupe les fichiers -out par instance.
-    Les fichiers -error sont ignores.
-    Retourne { instance: [(timestamp_nom_fichier, chemin_complet), ...] }
-    trie par timestamp croissant pour chaque instance.
+    Parcourt le repertoire et regroupe les fichiers -out par instance :
+    archives logrotate (<instance>-out__<date>.log[.gz]) ET fichier de log
+    courant (<instance>-out.log). Les fichiers -error sont ignores.
+    Retourne { instance: [(cle_de_tri, chemin_complet), ...] } trie par
+    cle_de_tri croissante pour chaque instance. cle_de_tri = horodatage du
+    nom pour une archive (indicatif uniquement : la periode couverte est lue
+    dans le contenu, cf. file_time_bounds) ; datetime.max pour le fichier
+    courant, toujours le dernier.
     """
     groups: dict[str, list[tuple[datetime, str]]] = {}
     for fname in os.listdir(directory):
@@ -446,10 +461,15 @@ def scan_out_files(directory: str) -> dict[str, list[tuple[datetime, str]]]:
         if not os.path.isfile(fpath):
             continue
         m = PM2_FILENAME_RE.match(fname)
-        if not m or m.group("stream") != "out":
-            continue
-        instance = m.group("instance")
-        ts = datetime.strptime(m.group("ts"), "%Y-%m-%d_%H-%M-%S")
+        if m and m.group("stream") == "out":
+            instance = m.group("instance")
+            ts = datetime.strptime(m.group("ts"), "%Y-%m-%d_%H-%M-%S")
+        else:
+            m = PM2_CURRENT_FILENAME_RE.match(fname)
+            if not m:
+                continue
+            instance = m.group("instance")
+            ts = datetime.max
         groups.setdefault(instance, []).append((ts, fpath))
 
     for instance in groups:
@@ -458,59 +478,59 @@ def scan_out_files(directory: str) -> dict[str, list[tuple[datetime, str]]]:
     return groups
 
 
-def select_files_in_range(
+def file_time_bounds(filepath: str) -> tuple[datetime, datetime] | None:
+    """
+    Retourne (premier, dernier) horodatage de cycle (UTC, lu dans les
+    tableaux ASCII) reellement presents dans le fichier, ou None si aucun
+    cycle. Seul le contenu fait foi : ni le nom du fichier ni sa date de
+    modification (heure locale, modifiable) ne sont utilises. Pour un
+    fichier non compresse, seuls le debut et la fin sont lus (par blocs
+    de BOUNDS_CHUNK_BYTES, elargis a tout le fichier si besoin).
+    """
+    def _find(text: str, last: bool) -> datetime | None:
+        found = TABLE_TS_RE.findall(strip_ansi(text))
+        if not found:
+            return None
+        return parse_cycle_timestamp(found[-1] if last else found[0])
+
+    if filepath.endswith(".gz"):
+        text = read_file_text(filepath)
+        first, last = _find(text, False), _find(text, True)
+    else:
+        size = os.path.getsize(filepath)
+        with open(filepath, "rb") as f:
+            head = f.read(BOUNDS_CHUNK_BYTES)
+            first = _find(head.decode("utf-8", errors="replace"), False)
+            f.seek(max(0, size - BOUNDS_CHUNK_BYTES))
+            tail = f.read()
+            last = _find(tail.decode("utf-8", errors="replace"), True)
+        if first is None or last is None:
+            text = read_file_text(filepath)
+            first, last = _find(text, False), _find(text, True)
+    if first is None or last is None:
+        return None
+    return first, last
+
+
+def select_files_by_bounds(
     files: list[tuple[datetime, str]], start: datetime, end: datetime
 ) -> list[tuple[datetime, str]]:
     """
-    Selectionne les fichiers dont l'horodatage tombe dans [start, end],
-    plus le fichier le plus proche juste avant start et celui le plus
-    proche juste apres end (un seul de chaque cote), s'ils existent.
-
-    Si aucun fichier ne tombe dans [start, end], l'instance est consideree
-    comme inactive sur la periode demandee : on ne va PAS chercher un
-    fichier limitrophe.
+    Selectionne les fichiers (archives + fichier courant) dont la periode
+    reellement couverte [premier cycle, dernier cycle], lue dans leur
+    contenu, chevauche [start, end] (UTC, comme les cycles). Remplace la
+    selection par horodatage de nom de fichier (select_files_daily /
+    select_files_in_range), qui ignorait le fichier courant et supposait
+    une signification du nom non garantie.
     """
-    in_range = [(ts, f) for ts, f in files if start <= ts <= end]
-    if not in_range:
-        return []
-
-    before_candidates = [(ts, f) for ts, f in files if ts < start]
-    after_candidates = [(ts, f) for ts, f in files if ts > end]
-
-    selected = list(in_range)
-    if before_candidates:
-        selected.append(max(before_candidates, key=lambda t: t[0]))
-    if after_candidates:
-        selected.append(min(after_candidates, key=lambda t: t[0]))
-
-    selected.sort(key=lambda t: t[0])
-    return selected
-
-
-def select_files_daily(
-    files: list[tuple[datetime, str]], start_date, end_date
-) -> list[tuple[datetime, str]] | None:
-    """
-    Mode journalier : le premier fichier retenu est celui date exactement
-    <start_date> 00:00:00, le dernier est celui date <end_date + 1 jour>
-    00:00:00, INCLUS EN TOTALITE.
-
-    Retourne None si l'un des deux fichiers 00:00:00 attendus n'existe pas
-    pour cette instance : l'appelant doit alors basculer sur le mode de
-    secours (select_files_in_range).
-    """
-    start_midnight = datetime.combine(start_date, dtime(0, 0, 0))
-    next_day_midnight = datetime.combine(end_date + timedelta(days=1), dtime(0, 0, 0))
-
-    has_start_file = any(ts == start_midnight for ts, _ in files)
-    has_next_day_file = any(ts == next_day_midnight for ts, _ in files)
-    if not has_start_file or not has_next_day_file:
-        return None
-
-    selected = [
-        (ts, f) for ts, f in files
-        if start_midnight <= ts <= next_day_midnight
-    ]
+    selected = []
+    for ts, fpath in files:
+        bounds = file_time_bounds(fpath)
+        if bounds is None:
+            continue
+        first, last = bounds
+        if first <= end and last >= start:
+            selected.append((ts, fpath))
     selected.sort(key=lambda t: t[0])
     return selected
 
@@ -924,7 +944,7 @@ def build_stats_header(
     """
     lines = [
         SEP_SINGLE,
-        "# gbLogs stats (gbLogsPm2_0-14)",
+        "# gbLogs stats (gbLogsPm2_0-16)",
         f"# instance={instance} pair={pair_suffix or '(toutes, fichier non separe par paire)'}",
         f"# periode={start_dt.strftime('%Y-%m-%d %H:%M:%S')} -> {end_dt.strftime('%Y-%m-%d %H:%M:%S')}",
         f"# cycles={n_cycles}",
@@ -1092,18 +1112,9 @@ def main() -> None:
 
     with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as out_zf:
         for instance in instances:
-            if daily_mode:
-                selected = select_files_daily(groups[instance], start_dt.date(), end_dt.date())
-                if selected is None:
-                    print(f"\n  Instance {instance} : fichier(s) 00:00:00 manquant(s) "
-                          f"(instance probablement inactive a la bascule de jour) "
-                          f"-> repli sur le mode plage precise pour cette instance.")
-                    selected = select_files_in_range(groups[instance], start_dt, end_dt)
-                else:
-                    print(f"\n  Instance {instance} : mode journalier applique "
-                          f"(fichiers 00:00:00 trouves).")
-            else:
-                selected = select_files_in_range(groups[instance], start_dt, end_dt)
+            selected = select_files_by_bounds(groups[instance], start_dt, end_dt)
+            print(f"\n  Instance {instance} : fichiers selectionnes d'apres les cycles "
+                  f"reellement presents (archives + fichier courant).")
 
             if not selected:
                 print(f"  Instance {instance} : aucun fichier dans/autour de la periode, ignoree.")
