@@ -24,7 +24,9 @@ projets qui le symlinkent — pas de copier-coller à répercuter.
 ## Convention de nommage des fichiers
 
 - Tous les fichiers de code, changelogs et règles sont nommés en
-  **minuscule**.
+  **minuscule**, sauf les noms d'actifs (jetons, contrats futures, etc. :
+  `BTC`, `ETH`) et les noms de fichiers imposés par un outil
+  (`CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `README.md`).
 - Piège cross-OS à connaître : un renommage qui ne change QUE la casse
   n'est pas fiable avec `git mv` sur un système de fichiers insensible à
   la casse (Windows/NTFS, macOS/APFS) — Git peut ne pas détecter le
@@ -39,7 +41,9 @@ projets qui le symlinkent — pas de copier-coller à répercuter.
 - **Format du message** : en anglais, compact, une ligne par élément
   séparée par un point-virgule (`;`) — pas de paragraphe, pas de détail
   narratif. Le détail complet vit dans les changelogs du projet quand
-  il en existe.
+  il en existe. Aucun résultat chiffré ni détail de mise en œuvre dans
+  le message : seulement ce qui change (fichiers, périmètre, version),
+  jamais les valeurs ni les effets mesurés.
 - **Ne jamais ajouter de ligne d'attribution `Co-Authored-By` (ou
   équivalente) dans le message de commit.**
 
@@ -63,9 +67,12 @@ projets qui le symlinkent — pas de copier-coller à répercuter.
 ## Scripts
 
 - Tout script (shell, PowerShell, Python, etc.) doit être versionné dans
-  git et accompagné d'un changelog dédié, colocalisé avec lui :
+  git et accompagné d'un changelog dédié, colocalisé avec lui. Nom :
   `<nom_du_script>.changelog.md` (même nom de base que le script, en
-  minuscule, cf. convention de nommage ci-dessus).
+  minuscule, cf. convention de nommage ci-dessus) pour un script isolé ;
+  `changelog_<groupe>.md` lorsqu'un même changelog couvre plusieurs
+  fichiers versionnés ensemble (il liste alors, en tête, les fichiers
+  couverts).
 - Le changelog liste les entrées par ordre antéchronologique (la plus
   récente en premier), chacune datée (`AAAA-MM-JJ`) et décrivant le
   changement en une ligne concise. Langue : français (langue de travail
@@ -73,6 +80,17 @@ projets qui le symlinkent — pas de copier-coller à répercuter.
   commit.
 - Toute modification fonctionnelle du script s'accompagne d'une entrée
   correspondante dans son changelog, dans le même commit.
+
+## Diagnostic SSH sous Windows
+
+- Sur Windows, Git Bash a son propre binaire/agent SSH, distinct de
+  l'agent Windows OpenSSH natif que `git` utilise réellement via
+  `core.sshCommand` — un `ssh -T git@github.com` lancé depuis Git Bash
+  peut donc échouer ("Permission denied") alors que `git push`/`git
+  ls-remote` fonctionnent déjà. Ne pas conclure à un problème de clé SSH
+  sans avoir vérifié `core.sshCommand` et testé avec `git ls-remote`.
+  Procédure complète : `ssh-windows-diagnostic.md` (même dossier).
+  Ne s'applique pas à macOS/Linux.
 
 ## Portabilité Cursor / Claude Code
 
